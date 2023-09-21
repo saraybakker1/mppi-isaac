@@ -72,3 +72,6 @@ Simply run one of the example scripts which use Pybullet, for instance for the p
 ```bash
 python3 panda_robot_with_obstacles.py
 ```
+
+hoi
+hoihoi
