@@ -7,5 +7,4 @@ render: true
 n_steps: 1000
 actors: ['panda', 'xaxis', 'yaxis']
 initial_actor_positions: [[0.0, 0.0, 0.0]]
-
 nx: 14

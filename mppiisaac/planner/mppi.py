@@ -300,6 +300,8 @@ class MPPIPlanner(ABC):
 
             action = self.U
 
+            cost_total_alternative = self._compute_total_cost_batch_simple_alternative(self.cfg.goal_orientations_alternative[0])
+
         elif self.mppi_mode == 'halton-spline':
             # shift command 1 time step
             saved_action = self.mean_action[-1]
@@ -476,6 +478,21 @@ class MPPIPlanner(ABC):
         perturbation_cost = torch.sum(self.U * action_cost, dim=(1, 2))
         self.cost_total += perturbation_cost
         return self.cost_total
+
+    def _compute_total_cost_batch_simple_alternative(self, goal_orientation_alternative):
+        """
+        Compute cost for different orientations
+        """
+        # make sure original goal orientation is maintained:
+        goal_orientation_original = self.cfg.goal_orientation
+        #overwrite goal orientation:
+        self.cfg.goal_orientation = goal_orientation_alternative
+        #compute cost with alternative goal orientation:
+        cost_total = self._compute_total_cost_batch_simple()
+        # set goal orientation to original value:
+        self.cfg.goal_orientation = goal_orientation_original
+        return cost_total
+
 
     def _compute_total_cost_batch_halton(self):
         """
