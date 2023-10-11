@@ -31,22 +31,18 @@ class MPPIisaacPlanner(object):
         dynamics, running_cost, and terminal_cost
     """
 
-    def __init__(self, cfg, objective: Callable, prior: Optional[Callable] = None):
+    def __init__(self, cfg, simulator_isaac_gym, objective: Callable, prior: Optional[Callable] = None, noise_sigma = None):
         self.cfg = cfg
         self.objective = objective
+        # actors = []
+        # for actor_name in cfg.actors:
+        #     with open(f'{os.path.dirname(mppiisaac.__file__)}/../conf/actors/{actor_name}.yaml') as f:
+        #         actors.append(ActorWrapper(**yaml.load(f, Loader=SafeLoader)))
+        #
+        # print(actors)
+        # self.actors = actors
 
-        actors = []
-        for actor_name in cfg.actors:
-            with open(f'{os.path.dirname(mppiisaac.__file__)}/../conf/actors/{actor_name}.yaml') as f:
-                actors.append(ActorWrapper(**yaml.load(f, Loader=SafeLoader)))
-
-        print(actors)
-        self.sim = IsaacGymWrapper(
-            cfg.isaacgym,
-            actors=actors,
-            init_positions=cfg.initial_actor_positions,
-            num_envs=cfg.mppi.num_samples,
-        )
+        self.sim = simulator_isaac_gym
 
         if prior:
             self.prior = lambda state, t: prior.compute_command(self.sim)
@@ -66,6 +62,14 @@ class MPPIisaacPlanner(object):
     
     def update_objective(self, objective):
         self.objective = objective
+
+    # def update_nr_of_samples(self, cfg, num_samples):
+    #     self.sim = IsaacGymWrapper(
+    #         cfg.isaacgym,
+    #         actors=self.actors,
+    #         init_positions=cfg.initial_actor_positions,
+    #         num_envs=num_samples,
+    #     )
 
     def dynamics(self, _, u, t=None):
         # Note: normally mppi passes the state as the first parameter in a dynamics call, but using isaacgym the state is already saved in the simulator itself, so we ignore it.

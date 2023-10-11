@@ -300,12 +300,16 @@ class MPPIPlanner(ABC):
 
             action = self.U
 
-            cost_total_alternative = self._compute_total_cost_batch_simple_alternative(self.cfg.goal_orientations_alternative[0])
+            try:
+                cost_total_alternative = self._compute_total_cost_batch_simple_alternative(self.cfg.goal_orientations_alternative[0])
+            except NameError:
+                cost_total_alternative = None
+
 
         elif self.mppi_mode == 'halton-spline':
             # shift command 1 time step
             saved_action = self.mean_action[-1]
-            self.mean_action = torch.roll(self.mean_action, -1, dims=0)
+            self.mean_faction = torch.roll(self.mean_action, -1, dims=0)
             self.mean_action[-1] = saved_action
             cost_total = self._compute_total_cost_batch_halton()
               
@@ -443,6 +447,11 @@ class MPPIPlanner(ABC):
             # self.cov_action[self.cov_action < 0.0005] = 0.0005
             self.scale_tril = torch.sqrt(self.cov_action)
         return delta
+
+    def reset_noise_sigma(self, noise_sigma_new):
+        self.noise_sigma = torch.tensor(noise_sigma_new, device=self.cfg.device)
+        self.noise_mu = torch.tensor(self.cfg.noise_mu, device=self.cfg.device)
+        self.noise_sigma_inv = torch.inverse(self.noise_sigma)
 
     def get_action_cost(self):
         if self.noise_abs_cost:

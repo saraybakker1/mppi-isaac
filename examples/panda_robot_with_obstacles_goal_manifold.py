@@ -2,6 +2,8 @@ import gym
 import numpy as np
 from urdfenvs.robots.generic_urdf import GenericUrdfReacher
 from mppiisaac.planner.mppi_isaac import MPPIisaacPlanner
+import mppiisaac
+from mppiisaac.planner.isaacgym_wrapper import IsaacGymWrapper, ActorWrapper
 import hydra
 from omegaconf import OmegaConf
 import os
@@ -10,14 +12,17 @@ from urdfenvs.sensors.full_sensor import FullSensor
 from mpscenes.obstacles.sphere_obstacle import SphereObstacle
 from mpscenes.goals.static_sub_goal import StaticSubGoal
 from mppiisaac.priors.fabrics_panda import FabricsPandaPrior
-
+from typing import Optional, List, Callable
 from mppiisaac.utils.config_store import ExampleConfig
+import yaml
+from yaml.loader import SafeLoader
 
 # MPPI to navigate a simple robot to a goal position
 
 urdf_file = (
     os.path.dirname(os.path.abspath(__file__)) + "/../assets/urdf/panda_bullet/panda.urdf"
 )
+
 
 class JointSpaceGoalObjective(object):
     def __init__(self, cfg, device):
@@ -60,6 +65,32 @@ class EndEffectorGoalObjective(object):
 
         return reach_cost * self.w_pos + align_cost * self.w_ort + coll_cost * self.w_coll
 
+class Action_to_Cost(object):
+        def __init__(self, cfg, dynamics: Callable, running_cost: Callable): #objective:Callable
+            self.horizon = cfg.mppi.horizon
+            #retrieve these functions from mppi_isaac.py:
+            self.running_cost=running_cost
+            self.dynamics = dynamics
+            # self.cfg = cfg
+            self.tensor_args = {'device': cfg.mppi.device, 'dtype': torch.float32}
+            self.dynamics = dynamics
+
+        def _running_cost(self, state):
+            # function from mppi.py
+            return self.running_cost(state)
+
+        def _dynamics(self, state, u, t=None):
+            #function from mppi.py
+            return self.dynamics(state, u, t=None)
+
+        def compute_costs_over_horizon(self, actions_horizon, state, str_name):
+            cost_horizon = torch.zeros([200, self.horizon], device=self.tensor_args['device'], dtype=self.tensor_args['dtype'])
+            for t in range(1): #self.horizon):
+                u = actions_horizon[t, :]
+                cost = self._running_cost(state)
+                print("Cost: ", str_name, cost)
+                # cost_horizon[:, t] = cost
+                # state, _ = self._dynamics(state, u, t)
 
 def initialize_environment(cfg):
     """
@@ -118,7 +149,6 @@ def initialize_environment(cfg):
     env.set_spaces()
     return env
 
-
 def set_planner(cfg):
     """
     Initializes the mppi planner for the panda arm.
@@ -130,13 +160,45 @@ def set_planner(cfg):
     """
     objective = EndEffectorGoalObjective(cfg, cfg.mppi.device)
     #objective = JointSpaceGoalObjective(cfg, cfg.mppi.device)
+    cfg.mppi.u_per_command = 0
     if cfg.mppi.use_priors == True:
         prior = FabricsPandaPrior(cfg)
     else:
         prior = None
-    planner = MPPIisaacPlanner(cfg, objective, prior)
+    sim = create_simulator_isaac_gym(cfg)
+    planner = MPPIisaacPlanner(cfg, sim, objective, prior, noise_sigma=cfg.mppi.noise_sigma)
 
-    return planner
+    #create alternative planner:
+    noise_sigma_alternative = [[1, 0., 0., 0., 0., 0., 0.],
+                            [0., 1, 0., 0., 0., 0., 0.],
+                            [0., 0., 1, 0., 0., 0., 0.],
+                            [0., 0., 0., 1, 0., 0., 0.],
+                            [0., 0., 0., 0., 1, 0., 0.],
+                            [0., 0., 0., 0., 0., 1, 0.],
+                            [0., 0., 0., 0., 0., 0., 1]]
+        # [[1e-21, 0., 0., 0., 0., 0., 0.],
+        #                     [0., 1e-21, 0., 0., 0., 0., 0.],
+        #                     [0., 0., 1e-21, 0., 0., 0., 0.],
+        #                     [0., 0., 0., 1e-21, 0., 0., 0.],
+        #                     [0., 0., 0., 0., 1e-21, 0., 0.],
+        #                     [0., 0., 0., 0., 0. ,1e-21, 0.],
+        #                     [0., 0., 0., 0., 0., 0., 1e-21]]
+    planner_alternative = MPPIisaacPlanner(cfg, sim, objective, prior, noise_sigma=noise_sigma_alternative)
+    return planner, planner_alternative
+
+def create_simulator_isaac_gym(cfg):
+    actors = []
+    for actor_name in cfg.actors:
+        with open(f'{os.path.dirname(mppiisaac.__file__)}/../conf/actors/{actor_name}.yaml') as f:
+            actors.append(ActorWrapper(**yaml.load(f, Loader=SafeLoader)))
+
+    sim = IsaacGymWrapper(
+        cfg.isaacgym,
+        actors=actors,
+        init_positions=cfg.initial_actor_positions,
+        num_envs=cfg.mppi.num_samples,
+    )
+    return sim
 
 
 @hydra.main(version_base=None, config_path="../conf", config_name="config_panda")
@@ -162,7 +224,9 @@ def run_panda_robot(cfg: ExampleConfig):
 
     env = initialize_environment(cfg)
 
-    planner = set_planner(cfg)
+    planner, planner_alternative = set_planner(cfg)
+    action_to_cost_1 = Action_to_Cost(cfg=cfg, dynamics=planner.dynamics, running_cost=planner.running_cost)
+    action_to_cost_2 = Action_to_Cost(cfg=cfg, dynamics=planner_alternative.dynamics, running_cost=planner_alternative.running_cost)
 
     action = np.zeros(7)
     ob, *_ = env.step(action)
@@ -171,11 +235,16 @@ def run_panda_robot(cfg: ExampleConfig):
         # Calculate action with the fabric planner, slice the states to drop Z-axis [3] information.
         ob_robot = ob["robot_0"]
         obst = ob["robot_0"]["FullSensor"]['obstacles']
-        action = planner.compute_action(
-            q=ob_robot["joint_state"]["position"],
-            qdot=ob_robot["joint_state"]["velocity"],
+        q_current = ob_robot["joint_state"]["position"]
+        qdot_current = ob_robot["joint_state"]["velocity"]
+        actions = planner.compute_action(
+            q=q_current,
+            qdot=qdot_current,
             obst=obst
         )
+        action = actions[0]
+        action_to_cost_1.compute_costs_over_horizon(actions_horizon=actions, state=[q_current, qdot_current], str_name="planner")
+        action_to_cost_2.compute_costs_over_horizon(actions_horizon=actions, state=[q_current, qdot_current], str_name="alternative planner")
         (
             ob,
             *_,
